@@ -1,12 +1,30 @@
 const express = require('express')
 const cors = require('cors')
 const app = express()
+var jwt = require('jsonwebtoken');
 const port = process.env.PORT || 5000
 
 app.use(cors())
 app.use(express.json())
 require('dotenv').config()
 
+
+const verifyJWT = (req, res, next) => {
+    const authorization = req.headers.authorization;
+    if (!authorization) {
+        return res.status(401).send({ error: true, message: 'unauthorized access request' })
+    }
+
+    const token = authorization.split(' ')[1]
+
+    jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+        if (err) {
+            return res.status(401).send({ error: true, message: 'unauthorized access request' })
+        }
+        req.decoded = decoded
+        next()
+    })
+}
 
 
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
@@ -31,7 +49,33 @@ async function run() {
         const cartCollection = client.db('bistroDb').collection('carts')
         const userCollection = client.db('bistroDb').collection('users')
 
+
+        // JWT  
+        app.post('/jwt', (req, res) => {
+            const user = req.body
+            const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1d' })
+
+            res.send({ token })
+        })
+
         // user apis
+
+        const verifyAdmin = async (req, res, next) => {
+            const email = req.decoded.email;
+            const query = { email: email }
+            const user = await userCollection.findOne(query)
+            if (user?.role !== 'admin') {
+                return res.status(403).send({ error: true, message: 'fobidden request' })
+            }
+
+            next()
+        }
+
+        app.get('/users', verifyJWT, verifyAdmin, async (req, res) => {
+            const result = await userCollection.find().toArray()
+            res.send(result)
+        })
+
         app.post('/users', async (req, res) => {
             const user = req.body
             const query = { email: req.body.email }
@@ -45,12 +89,45 @@ async function run() {
             }
         })
 
+        app.get('/users/admin/:email', verifyJWT, async (req, res) => {
+            const email = req.params.email;
+
+            if (req.decoded?.email !== email) {
+                res.send({ admin: false })
+            }
+
+            else {
+                const query = { email: email }
+                const user = await userCollection.findOne(query);
+                const result = { admin: user?.role === 'admin' }
+                res.send(result)
+            }
+        })
+
+        app.patch('/users/admin/:id', verifyJWT, verifyAdmin, async (req, res) => {
+            const id = req.params.id
+            const query = { _id: new ObjectId(id) }
+            const updateDoc = {
+                $set: {
+                    role: 'admin'
+                }
+            }
+            const result = await userCollection.updateOne(query, updateDoc)
+            res.send(result)
+        })
+
         // cart apis
-        app.get('/carts', async (req, res) => {
+        app.get('/carts', verifyJWT, async (req, res) => {
             const email = req.query.email;
             if (!email) {
                 res.send([])
             }
+
+            else if (req.decoded.email !== email) {
+                res.status(401).send({ error: true, message: 'unauthorized access request' })
+                console.log(req.decoded.email, email);
+            }
+
             else {
                 const query = { email: email }
                 const result = await cartCollection.find(query).toArray()
@@ -69,6 +146,14 @@ async function run() {
             const item = req.body
             console.log(item);
             const result = await cartCollection.insertOne(item)
+            res.send(result)
+        })
+
+
+
+        app.post('/menu', verifyJWT, async (req, res) => {
+            const menuItem = req.body;
+            const result = await menuCollection.insertOne(menuItem)
             res.send(result)
         })
 
